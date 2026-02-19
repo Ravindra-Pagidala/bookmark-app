@@ -44,7 +44,7 @@ export function useBookmarks(userId: string | null) {
 
     // Use a unique channel name per user + timestamp to avoid
     // stale channel reuse issues across hot-reloads / re-mounts
-    const channelName = `bookmarks-${userId}-${Date.now()}`;
+    const channelName = `bookmarks-private-${userId}`;   // stable per user;
 
     logger.info('Opening realtime channel', { channelName });
 
