@@ -1,17 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
-import { logger } from './utils/logger';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-if (!supabaseUrl || !supabaseKey) {
-  logger.error('Missing Supabase environment variables');
-  throw new Error('Missing Supabase environment variables');
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables. Check NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-logger.info('Supabase client initialized successfully', { 
-  url: supabaseUrl.replace(/\/+$/, ''),
-  hasKey: !!supabaseKey 
-});
+export async function createMiddlewareSupabase() {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}

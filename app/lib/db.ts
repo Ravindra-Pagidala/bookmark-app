@@ -1,101 +1,15 @@
-import { Bookmark, BookmarkCreate } from '../types';
 import { supabase } from './supabase';
 import { logger } from './utils/logger';
+import type { Bookmark, BookmarkCreate } from '../types';
 
 export class BookmarkRepository {
   private static instance: BookmarkRepository | null = null;
 
   private constructor() {}
 
-  public static getInstance(): BookmarkRepository {
-    if (!BookmarkRepository.instance) {
-      BookmarkRepository.instance = new BookmarkRepository();
-    }
+  static getInstance(): BookmarkRepository {
+    if (!BookmarkRepository.instance) BookmarkRepository.instance = new BookmarkRepository();
     return BookmarkRepository.instance;
-  }
-
-  async create(data: BookmarkCreate): Promise<Bookmark> {
-    try {
-      logger.debug('Creating bookmark', { title: data.title.substring(0, 50) });
-      
-      // Input validation
-      const title = (data.title || '').trim();
-      const url = (data.url || '').trim();
-      
-      if (!title || title.length < 1 || title.length > 500) {
-        throw new Error('Title must be 1-500 characters');
-      }
-      
-      if (!url || url.length < 5 || url.length > 2000) {
-        throw new Error('URL must be 5-2000 characters');
-      }
-      
-      if (!this.isValidUrl(url)) {
-        throw new Error('Invalid URL format');
-      }
-
-      const { data: result, error } = await supabase
-        .from('bookmarks')
-        .insert([{ title, url }])
-        .select()
-        .single()
-        .throwOnError();
-
-      if (!result) {
-        throw new Error('Bookmark creation failed - no data returned');
-      }
-
-      logger.info('Bookmark created', { id: result.id });
-      return result;
-    } catch (error) {
-      logger.error('BookmarkRepository.create failed', error);
-      throw error instanceof Error ? error : new Error('Failed to create bookmark');
-    }
-  }
-
-  async getByUser(userId: string): Promise<Bookmark[]> {
-    try {
-      logger.debug('Fetching bookmarks', { userId: userId.substring(0, 8) + '...' });
-      
-      const { data, error } = await supabase
-        .from('bookmarks')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        logger.error('Failed to fetch bookmarks', error);
-        throw error;
-      }
-
-      return data || [];
-    } catch (error) {
-      logger.error('BookmarkRepository.getByUser failed', error);
-      return [];
-    }
-  }
-
-  async delete(id: number, userId: string): Promise<boolean> {
-    try {
-      logger.debug('Deleting bookmark', { id, userId: userId.substring(0, 8) + '...' });
-      
-      const { error } = await supabase
-        .from('bookmarks')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', userId);
-
-      if (error) {
-        logger.error('Delete failed', error);
-        return false;
-      }
-
-      logger.info('Bookmark deleted', { id });
-      return true;
-    } catch (error) {
-      logger.error('BookmarkRepository.delete failed', error);
-      return false;
-    }
   }
 
   private isValidUrl(url: string): boolean {
@@ -105,6 +19,63 @@ export class BookmarkRepository {
     } catch {
       return false;
     }
+  }
+
+  // ✅ FIX: accepts user_id in data so RLS WITH CHECK (user_id = auth.uid()) passes
+  async create(data: BookmarkCreate): Promise<Bookmark> {
+    const title = data.title.trim();
+    const url = data.url.trim();
+    const user_id = data.user_id;
+
+    if (!title || title.length > 500) throw new Error('Title must be 1–500 characters');
+    if (!url || url.length > 2000) throw new Error('URL is too long');
+    if (!this.isValidUrl(url)) throw new Error('Please enter a valid URL (e.g. https://example.com)');
+    if (!user_id) throw new Error('Not authenticated');
+
+    logger.debug('Creating bookmark', { title: title.substring(0, 40) });
+
+    const { data: result, error } = await supabase
+      .from('bookmarks')
+      .insert([{ title, url, user_id }])  // ← user_id included so RLS passes
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('BookmarkRepository.create failed', error);
+      throw error;
+    }
+    if (!result) throw new Error('No data returned from insert');
+
+    logger.info('Bookmark created', { id: result.id });
+    return result;
+  }
+
+  async getByUser(userId: string): Promise<Bookmark[]> {
+    const { data, error } = await supabase
+      .from('bookmarks')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      logger.error('getByUser failed', error);
+      throw error;
+    }
+    return data ?? [];
+  }
+
+  async delete(id: number, userId: string): Promise<boolean> {
+    const { error } = await supabase
+      .from('bookmarks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      logger.error('delete failed', error);
+      return false;
+    }
+    return true;
   }
 }
 

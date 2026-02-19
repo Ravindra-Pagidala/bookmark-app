@@ -1,49 +1,26 @@
-import { User } from '../types';
 import { supabase } from './supabase';
 import { logger } from './utils/logger';
-
+import type { User } from '../types';
 
 export class AuthService {
   static async signInWithGoogle(): Promise<void> {
-    try {
-      logger.info('Google OAuth initiated');
-      
-      if (typeof window === 'undefined') {
-        throw new Error('Google OAuth only available in browser');
-      }
+    if (typeof window === 'undefined') throw new Error('Google OAuth only available in browser');
 
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google' as const,
-        options: {
-          redirectTo: `${window.location.origin}/bookmarks`,
-        },
-      });
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${window.location.origin}/bookmarks` },
+    });
 
-      if (error) {
-        logger.error('Google OAuth failed', error);
-        throw error;
-      }
-
-      logger.info('Google OAuth success');
-    } catch (error) {
-      logger.error('AuthService.signInWithGoogle failed', error);
+    if (error) {
+      logger.error('Google OAuth failed', error);
       throw error;
     }
   }
 
   static async signOut(): Promise<void> {
-    try {
-      logger.info('User sign out initiated');
-      const { error } = await supabase.auth.signOut();
-      
-      if (error) {
-        logger.error('Sign out failed', error);
-        throw error;
-      }
-      
-      logger.info('User signed out successfully');
-    } catch (error) {
-      logger.error('AuthService.signOut failed', error);
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      logger.error('Sign out failed', error);
       throw error;
     }
   }
@@ -51,19 +28,14 @@ export class AuthService {
   static async getCurrentUser(): Promise<User | null> {
     try {
       const { data: { user }, error } = await supabase.auth.getUser();
-      
-      if (error || !user) {
-        logger.debug('No authenticated user found');
-        return null;
-      }
-      
+      if (error || !user) return null;
       return {
         id: user.id,
-        email: user.email || '',
-        user_metadata: user.user_metadata || {},
+        email: user.email ?? '',
+        user_metadata: user.user_metadata ?? {},
       };
-    } catch (error) {
-      logger.error('AuthService.getCurrentUser failed', error);
+    } catch (err) {
+      logger.error('getCurrentUser failed', err);
       return null;
     }
   }

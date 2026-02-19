@@ -1,4 +1,3 @@
-// DTOs - Enterprise TypeScript interfaces
 export interface Bookmark {
   id: number;
   user_id: string;
@@ -10,6 +9,7 @@ export interface Bookmark {
 export interface BookmarkCreate {
   title: string;
   url: string;
+  user_id: string;
 }
 
 export interface User {
@@ -20,14 +20,3 @@ export interface User {
     full_name?: string;
   };
 }
-
-export interface DatabaseError {
-  message: string;
-  code?: string;
-  details?: string;
-}
-
-export type ApiResponse<T> = {
-  data: T | null;
-  error: DatabaseError | null;
-};
