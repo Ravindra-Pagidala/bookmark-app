@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { bookmarkRepo } from '../lib/db';
 import { logger } from '../lib/utils/logger';
@@ -11,6 +11,11 @@ export function useBookmarks(userId: string | null) {
   const [error, setError] = useState<string | null>(null);
   const [subscribed, setSubscribed] = useState(false);
 
+  // Keep a stable ref so realtime handlers always have latest bookmarks
+  // without needing to be in the dependency array (avoids subscription thrash)
+  const bookmarksRef = useRef<Bookmark[]>([]);
+  bookmarksRef.current = bookmarks;
+
   const fetchBookmarks = useCallback(async () => {
     if (!userId) { setBookmarks([]); return; }
     try {
@@ -18,6 +23,7 @@ export function useBookmarks(userId: string | null) {
       setError(null);
       const data = await bookmarkRepo.getByUser(userId);
       setBookmarks(data);
+      logger.info('Bookmarks fetched', { count: data.length });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load bookmarks');
       logger.error('fetchBookmarks failed', err);
@@ -27,53 +33,107 @@ export function useBookmarks(userId: string | null) {
   }, [userId]);
 
   useEffect(() => {
-    if (!userId) { setSubscribed(false); return; }
+    if (!userId) {
+      setSubscribed(false);
+      setBookmarks([]);
+      return;
+    }
 
+    // Initial fetch
     fetchBookmarks();
 
+    // Use a unique channel name per user + timestamp to avoid
+    // stale channel reuse issues across hot-reloads / re-mounts
+    const channelName = `bookmarks-${userId}-${Date.now()}`;
+
+    logger.info('Opening realtime channel', { channelName });
+
     const channel = supabase
-      .channel(`bookmarks:${userId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'bookmarks',
-        filter: `user_id=eq.${userId}`,
-      }, (payload) => {
-        logger.debug('Realtime event', { type: payload.eventType });
-        switch (payload.eventType) {
-          case 'INSERT':
-            setBookmarks(prev => {
-              // Avoid duplicates if optimistic insert already in list
-              const exists = prev.some(b => b.id === (payload.new as Bookmark).id);
-              if (exists) return prev;
-              return [payload.new as Bookmark, ...prev];
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'bookmarks',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          logger.info('Realtime INSERT received', { id: (payload.new as Bookmark).id });
+          const incoming = payload.new as Bookmark;
+          setBookmarks(prev => {
+            // Deduplicate: real row may replace our optimistic entry
+            // Optimistic entries have numeric Date.now() IDs (13 digits)
+            // Real DB rows have BIGSERIAL IDs (much smaller numbers)
+            // So we remove any optimistic entry with same url+title, then prepend real row
+            const withoutOptimistic = prev.filter(b => {
+              const isOptimistic = b.id > 9_000_000_000_000; // 13-digit timestamp
+              return !(isOptimistic && b.url === incoming.url && b.title === incoming.title);
             });
-            break;
-          case 'UPDATE':
-            setBookmarks(prev => prev.map(b =>
-              b.id === (payload.new as Bookmark).id ? (payload.new as Bookmark) : b
-            ));
-            break;
-          case 'DELETE':
-            setBookmarks(prev => prev.filter(b => b.id !== (payload.old as Bookmark).id));
-            break;
+            // Also guard against exact ID duplicate
+            if (withoutOptimistic.some(b => b.id === incoming.id)) return withoutOptimistic;
+            return [incoming, ...withoutOptimistic];
+          });
         }
-      })
-      .subscribe(status => {
-        setSubscribed(status === 'SUBSCRIBED');
-        if (status !== 'SUBSCRIBED') logger.warn('Realtime status', { status });
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'bookmarks',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          logger.info('Realtime UPDATE received', { id: (payload.new as Bookmark).id });
+          setBookmarks(prev =>
+            prev.map(b => b.id === (payload.new as Bookmark).id ? (payload.new as Bookmark) : b)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'bookmarks',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          logger.info('Realtime DELETE received', { id: (payload.old as Bookmark).id });
+          setBookmarks(prev => prev.filter(b => b.id !== (payload.old as Bookmark).id));
+        }
+      )
+      .subscribe((status, err) => {
+        logger.info('Realtime subscription status', { status, err });
+        if (status === 'SUBSCRIBED') {
+          setSubscribed(true);
+          logger.info('Realtime subscribed successfully');
+        } else if (status === 'CHANNEL_ERROR') {
+          setSubscribed(false);
+          logger.error('Realtime channel error', err);
+        } else if (status === 'TIMED_OUT') {
+          setSubscribed(false);
+          logger.error('Realtime timed out');
+        } else if (status === 'CLOSED') {
+          setSubscribed(false);
+          logger.warn('Realtime channel closed');
+        }
       });
 
-    return () => { supabase.removeChannel(channel); };
-  }, [userId, fetchBookmarks]);
+    return () => {
+      logger.info('Removing realtime channel', { channelName });
+      supabase.removeChannel(channel);
+      setSubscribed(false);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]); // ← intentionally exclude fetchBookmarks to prevent re-subscription on every render
 
-  //  pass user_id to repo so RLS INSERT policy passes
-  //  capture optimisticId at creation time, not in catch block
   const addBookmark = async (data: { title: string; url: string }) => {
     if (!userId) throw new Error('Not authenticated');
 
     setError(null);
-    const optimisticId = Date.now(); // ← captured once, used consistently
+    const optimisticId = Date.now();
 
     const optimisticBookmark: Bookmark = {
       id: optimisticId,
@@ -86,16 +146,12 @@ export function useBookmarks(userId: string | null) {
     setBookmarks(prev => [optimisticBookmark, ...prev]);
 
     try {
-      // ✅ Pass user_id so the DB insert includes it → RLS check passes
       const newBookmark = await bookmarkRepo.create({ ...data, user_id: userId });
-
       // Replace optimistic entry with real DB row
       setBookmarks(prev => prev.map(b => b.id === optimisticId ? newBookmark : b));
-
       logger.info('Bookmark added', { id: newBookmark.id });
       return newBookmark;
     } catch (err) {
-      // ✅ FIX: revert using captured optimisticId, not a fresh Date.now()
       setBookmarks(prev => prev.filter(b => b.id !== optimisticId));
       const msg = err instanceof Error ? err.message : 'Failed to add bookmark';
       setError(msg);
@@ -106,7 +162,7 @@ export function useBookmarks(userId: string | null) {
 
   const deleteBookmark = async (id: number) => {
     if (!userId) return false;
-    const snapshot = [...bookmarks];
+    const snapshot = [...bookmarksRef.current];
     setBookmarks(prev => prev.filter(b => b.id !== id));
     try {
       const ok = await bookmarkRepo.delete(id, userId);
