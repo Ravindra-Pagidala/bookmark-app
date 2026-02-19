@@ -42,9 +42,8 @@ export function useBookmarks(userId: string | null) {
     // Initial fetch
     fetchBookmarks();
 
-    // Use a unique channel name per user + timestamp to avoid
-    // stale channel reuse issues across hot-reloads / re-mounts
-    const channelName = `bookmarks-private-${userId}`;   // stable per user;
+    // Stable channel name per user
+    const channelName = `bookmarks-private-${userId}`;
 
     logger.info('Opening realtime channel', { channelName });
 
@@ -91,24 +90,39 @@ export function useBookmarks(userId: string | null) {
           );
         }
       )
-      .on(
+     .on(
         'postgres_changes',
         {
           event: 'DELETE',
           schema: 'public',
           table: 'bookmarks',
-          filter: `user_id=eq.${userId}`,
+          // NO filter
         },
         (payload) => {
-          logger.info('Realtime DELETE received', { id: (payload.old as Bookmark).id });
-          setBookmarks(prev => prev.filter(b => b.id !== (payload.old as Bookmark).id));
+          const old = payload.old as Partial<Bookmark> | undefined;
+          if (!old) return;
+
+          const deletedId = Number(old.id ?? 0);
+
+          logger.info('Realtime DELETE received ', {
+            deletedId,
+            rawOld: JSON.stringify(old, null, 2),
+          });
+
+          // Remove the bookmark by ID — no user_id check needed
+          // (safe because channel is user-specific)
+          setBookmarks(prev => {
+            const newList = prev.filter(b => Number(b.id) !== deletedId);
+            logger.info('Deleted from list ', { remaining: newList.length });
+            return newList;
+          });
         }
       )
       .subscribe((status, err) => {
-        logger.info('Realtime subscription status', { status, err });
+        logger.info('Realtime subscription status', { status, err, channelName });
         if (status === 'SUBSCRIBED') {
           setSubscribed(true);
-          logger.info('Realtime subscribed successfully');
+          logger.info('Realtime subscribed successfully', { channelName });
         } else if (status === 'CHANNEL_ERROR') {
           setSubscribed(false);
           logger.error('Realtime channel error', err);
