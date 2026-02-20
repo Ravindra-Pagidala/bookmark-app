@@ -96,7 +96,7 @@ export function useBookmarks(userId: string | null) {
           event: 'DELETE',
           schema: 'public',
           table: 'bookmarks',
-          // NO filter
+          // NO filterm 
         },
         (payload) => {
           const old = payload.old as Partial<Bookmark> | undefined;
