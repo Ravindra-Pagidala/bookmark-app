@@ -433,3 +433,6 @@ npm run lint     # ESLint check
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase public anon key | Supabase → Settings → API |
 
 Both variables are prefixed `NEXT_PUBLIC_` which makes them available in the browser bundle. The anon key is safe to expose — all data security is enforced by Row Level Security at the PostgreSQL level, not by keeping the key secret.
+
+Built in Hyderabad with persistence and coffee.
+— Ravindra Pagidala
